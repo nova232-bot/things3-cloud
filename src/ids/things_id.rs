@@ -85,7 +85,13 @@ impl FromStr for ThingsId {
         // `ACTIONGROUP-` discriminator in both object keys and task
         // relationships. The UUID suffix identifies the same entity and can
         // be canonicalized through the normal legacy UUID path.
+        //
+        // Other legacy identifiers carry a `-YYYYMMDD` date stamp after the
+        // UUID (seen on tombstones of old recurring-task instances). The UUID
+        // prefix identifies the same entity, so the stamp is stripped before
+        // canonicalization.
         let uuid_candidate = s.strip_prefix("ACTIONGROUP-").unwrap_or(s);
+        let uuid_candidate = strip_date_suffix(uuid_candidate);
         if let Ok(uuid) = Uuid::parse_str(uuid_candidate) {
             return Ok(ThingsId(uuid_to_bytes(&uuid)));
         }
@@ -232,6 +238,17 @@ fn uuid_to_bytes(uuid: &Uuid) -> [u8; 16] {
     bytes
 }
 
+/// Strip a legacy `-YYYYMMDD` date stamp from a hyphenated UUID string,
+/// returning the input unchanged when it does not carry one.
+fn strip_date_suffix(s: &str) -> &str {
+    // Hyphenated UUIDs are 36 chars; the stamp adds `-` plus 8 digits.
+    if s.len() == 45 && s.as_bytes()[36] == b'-' && s[37..].bytes().all(|b| b.is_ascii_digit()) {
+        &s[..36]
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -241,6 +258,7 @@ mod tests {
     const LEGACY_UUID: &str = "3C6BBD49-8D11-4FFF-8B0E-B8F33FA9C00A";
     const LEGACY_UUID_LOWER: &str = "3c6bbd49-8d11-4fff-8b0e-b8f33fa9c00a";
     const LEGACY_ACTION_GROUP_ID: &str = "ACTIONGROUP-3C6BBD49-8D11-4FFF-8B0E-B8F33FA9C00A";
+    const LEGACY_DATED_ID: &str = "3C6BBD49-8D11-4FFF-8B0E-B8F33FA9C00A-20200515";
     fn compact_for_legacy() -> String {
         ThingsId::from_str(LEGACY_UUID).unwrap().to_string()
     }
@@ -271,6 +289,31 @@ mod tests {
         let parsed: ThingsId = serde_json::from_str(&format!(r#""{LEGACY_ACTION_GROUP_ID}""#))
             .expect("deserialize legacy action-group ID");
         assert_eq!(parsed, LEGACY_UUID.parse().unwrap());
+    }
+
+    #[test]
+    fn parse_legacy_dated_id_as_its_uuid() {
+        let uuid: ThingsId = LEGACY_UUID.parse().unwrap();
+        let dated: ThingsId = LEGACY_DATED_ID.parse().unwrap();
+        assert_eq!(dated, uuid);
+    }
+
+    #[test]
+    fn serde_deserialize_legacy_dated_id() {
+        let parsed: ThingsId = serde_json::from_str(&format!(r#""{LEGACY_DATED_ID}""#))
+            .expect("deserialize legacy date-stamped ID");
+        assert_eq!(parsed, LEGACY_UUID.parse().unwrap());
+    }
+
+    #[test]
+    fn date_suffix_requires_eight_digits() {
+        // Not a date stamp: falls through to the compact/base58 path and fails.
+        assert!("3C6BBD49-8D11-4FFF-8B0E-B8F33FA9C00A-2020051"
+            .parse::<ThingsId>()
+            .is_err());
+        assert!("3C6BBD49-8D11-4FFF-8B0E-B8F33FA9C00A-202005151"
+            .parse::<ThingsId>()
+            .is_err());
     }
 
     #[test]
